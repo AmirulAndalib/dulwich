@@ -36,16 +36,12 @@ from typing import (
     Iterator,
     List,
     Optional,
+    Protocol,
     Sequence,
     Set,
     Tuple,
     cast,
 )
-
-try:
-    from typing import Protocol
-except ImportError:  # python << 3.8
-    from typing_extensions import Protocol  # type: ignore
 
 from .errors import NotTreeError
 from .file import GitFile
@@ -1416,7 +1412,7 @@ class ObjectStoreGraphWalker:
     def ack(self, sha):
         """Ack that a revision and its ancestors are present in the source."""
         if len(sha) != 40:
-            raise ValueError("unexpected sha %r received" % sha)
+            raise ValueError(f"unexpected sha {sha!r} received")
         ancestors = {sha}
 
         # stop if we run out of heads to remove

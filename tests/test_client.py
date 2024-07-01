@@ -58,7 +58,7 @@ from dulwich.client import (
 from dulwich.config import ConfigDict
 from dulwich.objects import Commit, Tree
 from dulwich.pack import pack_objects_to_data, write_pack_data, write_pack_objects
-from dulwich.protocol import TCP_GIT_PORT, Protocol
+from dulwich.protocol import DEFAULT_GIT_PROTOCOL_VERSION_FETCH, TCP_GIT_PORT, Protocol
 from dulwich.repo import MemoryRepo, Repo
 from dulwich.tests.utils import open_repo, setup_warning_catcher, tear_down_repo
 
@@ -72,7 +72,7 @@ class DummyClient(TraditionalGitClient):
         self.write = write
         TraditionalGitClient.__init__(self)
 
-    def _connect(self, service, path):
+    def _connect(self, service, path, protocol_version=None):
         return Protocol(self.read, self.write), self.can_read, None
 
 
@@ -714,6 +714,7 @@ class TestSSHVendor:
         password=None,
         key_filename=None,
         ssh_command=None,
+        protocol_version=None,
     ):
         self.host = host
         self.command = command
@@ -722,6 +723,7 @@ class TestSSHVendor:
         self.password = password
         self.key_filename = key_filename
         self.ssh_command = ssh_command
+        self.protocol_version = protocol_version
 
         class Subprocess:
             pass
@@ -994,7 +996,7 @@ class HttpGitClientTests(TestCase):
         basic_auth = c.pool_manager.headers["authorization"]
         auth_string = "{}:{}".format("user", "passwd")
         b64_credentials = base64.b64encode(auth_string.encode("latin1"))
-        expected_basic_auth = "Basic %s" % b64_credentials.decode("latin1")
+        expected_basic_auth = "Basic {}".format(b64_credentials.decode("latin1"))
         self.assertEqual(basic_auth, expected_basic_auth)
 
     def test_init_username_set_no_password(self):
@@ -1048,7 +1050,7 @@ class HttpGitClientTests(TestCase):
         basic_auth = c.pool_manager.headers["authorization"]
         auth_string = f"{original_username}:{original_password}"
         b64_credentials = base64.b64encode(auth_string.encode("latin1"))
-        expected_basic_auth = "Basic %s" % b64_credentials.decode("latin1")
+        expected_basic_auth = "Basic {}".format(b64_credentials.decode("latin1"))
         self.assertEqual(basic_auth, expected_basic_auth)
 
     def test_url_redirect_location(self):
@@ -1184,6 +1186,51 @@ class HttpGitClientTests(TestCase):
         clone_url = "https://hacktivis.me/git/blog.git/"
         client = HttpGitClient(clone_url, pool_manager=PoolManagerMock(), config=None)
         self.assertTrue(client._smart_request("git-upload-pack", clone_url, data=None))
+
+    def test_urllib3_protocol_error(self):
+        from urllib3.exceptions import ProtocolError
+        from urllib3.response import HTTPResponse
+
+        error_msg = "protocol error"
+
+        # we need to mock urllib3.PoolManager as this test will fail
+        # otherwise without an active internet connection
+        class PoolManagerMock:
+            def __init__(self) -> None:
+                self.headers: Dict[str, str] = {}
+
+            def request(
+                self,
+                method,
+                url,
+                fields=None,
+                headers=None,
+                redirect=True,
+                preload_content=True,
+            ):
+                response = HTTPResponse(
+                    headers={"Content-Type": "application/x-git-upload-pack-result"},
+                    request_method=method,
+                    request_url=url,
+                    preload_content=preload_content,
+                    status=200,
+                )
+
+                def read(self):
+                    raise ProtocolError(error_msg)
+
+                # override HTTPResponse.read to throw urllib3.exceptions.ProtocolError
+                response.read = read
+                return response
+
+        def check_heads(heads, **kwargs):
+            self.assertEqual(heads, {})
+            return []
+
+        clone_url = "https://git.example.org/user/project.git/"
+        client = HttpGitClient(clone_url, pool_manager=PoolManagerMock(), config=None)
+        with self.assertRaises(GitProtocolError, msg=error_msg):
+            client.fetch_pack(b"/", check_heads, None, None)
 
 
 class TCPGitClientTests(TestCase):
@@ -1492,6 +1539,13 @@ class SubprocessSSHVendorTests(TestCase):
             "2200",
             "-i",
             "/tmp/id_rsa",
+        ]
+        if DEFAULT_GIT_PROTOCOL_VERSION_FETCH:
+            expected += [
+                "-o",
+                f"SetEnv GIT_PROTOCOL=version={DEFAULT_GIT_PROTOCOL_VERSION_FETCH}",
+            ]
+        expected += [
             "user@host",
             "git-clone-url",
         ]
@@ -1515,6 +1569,13 @@ class SubprocessSSHVendorTests(TestCase):
             "-o",
             "Option=Value",
             "-x",
+        ]
+        if DEFAULT_GIT_PROTOCOL_VERSION_FETCH:
+            expected += [
+                "-o",
+                f"SetEnv GIT_PROTOCOL=version={DEFAULT_GIT_PROTOCOL_VERSION_FETCH}",
+            ]
+        expected += [
             "host",
             "git-clone-url",
         ]
@@ -1657,12 +1718,12 @@ class PLinkSSHVendorTests(TestCase):
     def test_run_with_ssh_command(self):
         expected = [
             "/path/to/plink",
-            "-x",
+            "-ssh",
             "host",
             "git-clone-url",
         ]
 
-        vendor = SubprocessSSHVendor()
+        vendor = PLinkSSHVendor()
         command = vendor.run_command(
             "host",
             "git-clone-url",

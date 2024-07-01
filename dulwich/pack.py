@@ -45,7 +45,12 @@ except ModuleNotFoundError:
 import os
 import struct
 import sys
+import warnings
+import zlib
+from hashlib import sha1
 from itertools import chain
+from os import SEEK_CUR, SEEK_END
+from struct import unpack_from
 from typing import (
     BinaryIO,
     Callable,
@@ -56,23 +61,13 @@ from typing import (
     Iterator,
     List,
     Optional,
+    Protocol,
     Sequence,
     Set,
     Tuple,
     TypeVar,
     Union,
 )
-
-try:
-    from typing import Protocol
-except ImportError:  # python << 3.8
-    from typing_extensions import Protocol  # type: ignore
-
-import warnings
-import zlib
-from hashlib import sha1
-from os import SEEK_CUR, SEEK_END
-from struct import unpack_from
 
 try:
     import mmap
@@ -830,7 +825,7 @@ def read_pack_header(read) -> Tuple[int, int]:
     if not header:
         raise AssertionError("file too short to contain pack")
     if header[:4] != b"PACK":
-        raise AssertionError("Invalid pack header %r" % header)
+        raise AssertionError(f"Invalid pack header {header!r}")
     (version,) = unpack_from(b">L", header, 4)
     if version not in (2, 3):
         raise AssertionError("Version was %d" % version)
@@ -2343,7 +2338,7 @@ def apply_delta(src_buf, delta):
             raise ApplyDeltaError("Invalid opcode 0")
 
     if index != delta_length:
-        raise ApplyDeltaError("delta not empty: %r" % delta[index:])
+        raise ApplyDeltaError(f"delta not empty: {delta[index:]!r}")
 
     if dest_size != chunks_length(out):
         raise ApplyDeltaError("dest size incorrect")
@@ -2610,7 +2605,7 @@ class Pack:
             to determine whether or not a .keep file is obsolete.
         Returns: The path of the .keep file, as a string.
         """
-        keepfile_name = "%s.keep" % self._basename
+        keepfile_name = f"{self._basename}.keep"
         with GitFile(keepfile_name, "wb") as keepfile:
             if msg:
                 keepfile.write(msg)
@@ -2660,6 +2655,8 @@ class Pack:
                 assert isinstance(basename, bytes) and len(basename) == 20
                 base_offset, base_type, base_obj = get_ref(basename)
                 assert isinstance(base_type, int)
+                if base_offset == prev_offset:  # object is based on itself
+                    raise UnresolvedDeltas(sha_to_hex(basename))
             delta_stack.append((prev_offset, base_type, delta))
 
         # Now grab the base object (mustn't be a delta) and apply the

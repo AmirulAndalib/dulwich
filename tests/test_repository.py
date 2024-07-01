@@ -65,12 +65,12 @@ class CreateRepositoryTests(TestCase):
         barestr = b"bare = " + str(expect_bare).lower().encode("ascii")
         with repo.get_named_file("config") as f:
             config_text = f.read()
-            self.assertIn(barestr, config_text, "%r" % config_text)
+            self.assertIn(barestr, config_text, f"{config_text!r}")
         expect_filemode = sys.platform != "win32"
         barestr = b"filemode = " + str(expect_filemode).lower().encode("ascii")
         with repo.get_named_file("config") as f:
             config_text = f.read()
-            self.assertIn(barestr, config_text, "%r" % config_text)
+            self.assertIn(barestr, config_text, f"{config_text!r}")
 
         if isinstance(repo, Repo):
             expected_mode = "0o100644" if expect_filemode else "0o100666"
@@ -405,9 +405,7 @@ class RepositoryRootTests(TestCase):
     def test_clone_no_head(self):
         temp_dir = self.mkdtemp()
         self.addCleanup(shutil.rmtree, temp_dir)
-        repo_dir = os.path.join(
-            os.path.dirname(__file__), "..", "testdata", "repos"
-        )
+        repo_dir = os.path.join(os.path.dirname(__file__), "..", "testdata", "repos")
         dest_dir = os.path.join(temp_dir, "a.git")
         shutil.copytree(os.path.join(repo_dir, "a.git"), dest_dir, symlinks=True)
         r = Repo(dest_dir)
@@ -1141,6 +1139,22 @@ class BuildRepoRootTests(TestCase):
         c.write_to_path()
         cs = r.get_config_stack()
         self.assertEqual(cs.get(("user",), "name"), b"Jelmer")
+
+    def test_worktreeconfig_extension_case(self):
+        """Test that worktree code does not error for alternate case format."""
+        r = self._repo
+        c = r.get_config()
+        c.set(("core",), "repositoryformatversion", "1")
+        # Capitalize "Config"
+        c.set(("extensions",), "worktreeConfig", True)
+        c.write_to_path()
+        c = r.get_worktree_config()
+        c.set(("user",), "repositoryformatversion", "1")
+        c.set((b"user",), b"name", b"Jelmer")
+        c.write_to_path()
+        # The following line errored before
+        # https://github.com/jelmer/dulwich/issues/1285 was addressed
+        Repo(self._repo_dir)
 
     def test_repositoryformatversion_1_extension(self):
         r = self._repo
