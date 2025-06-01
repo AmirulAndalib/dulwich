@@ -1,5 +1,12 @@
 0.22.9	UNRELEASED
 
+ * Add support for Git's ``feature.manyFiles`` configuration and index version 4.
+   This enables faster Git operations in large repositories through path prefix
+   compression (30-50% smaller index files) and optional hash skipping for faster
+   writes. Supports ``feature.manyFiles``, ``index.version``, and ``index.skipHash``
+   configuration options.
+   (Jelmer Vernooĳ, #1061, #1462)
+
  * In dulwich.porcelain docstring, list functions by their Python identifiers.
    (Marnanel Thurman)
 
@@ -14,6 +21,30 @@
    (Jelmer Vernooĳ, #1548)
 
  * Bump PyO3 to 0.25. (Jelmer Vernooĳ)
+
+ * In ``SubprocessClient`` time out after 60 seconds
+   when the subprocess hasn't terminated when closing
+   the channel. (Jelmer Vernooĳ)
+
+ * Add type hint for ``dulwich.client.get_ssh_vendor``.
+   (Jelmer Vernooĳ, #1471)
+
+ * Add basic merge command. (Jelmer Vernooĳ)
+
+ * Update working tree in pull. (Jelmer Vernooĳ, #452)
+
+ * Support switching branch in a way that updates
+   working tree. (Jelmer Vernooĳ, #576)
+
+ * Fix typing for ``dulwich.client`` methods that take repositories.
+   (Jelmer Vernooĳ, #1521)
+
+ * Fix handling of casing of subsection names in config.
+   (Jelmer Vernooĳ, #1183)
+
+ * Update working tree in pull. (Jelmer Vernooĳ, #452)
+
+ * Use ``dissolve`` to manage deprecations. (Jelmer Vernooĳ)
 
 0.22.8	2025-03-02
 
