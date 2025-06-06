@@ -24,3 +24,33 @@
 """Python implementation of the Git file formats and protocols."""
 
 __version__ = (0, 22, 9)
+
+__all__ = ["replace_me"]
+
+try:
+    from dissolve import replace_me
+except ImportError:
+    # if dissolve is not installed, then just provide a basic implementation
+    # of its replace_me decorator
+    def replace_me(since=None, remove_in=None):
+        def decorator(func):
+            import warnings
+
+            m = f"{func.__name__} is deprecated"
+            if since is not None and remove_in is not None:
+                m += f" since {since} and will be removed in {remove_in}"
+            elif since is not None:
+                m += f" since {since}"
+            elif remove_in is not None:
+                m += f" and will be removed in {remove_in}"
+            else:
+                m += " and will be removed in a future version"
+
+            warnings.warn(
+                m,
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return func
+
+        return decorator
