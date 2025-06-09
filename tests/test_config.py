@@ -266,6 +266,56 @@ who\"
         c.write_to_file(f)
         self.assertEqual(b'[xandikos]\n\tcolor = "#665544"\n', f.getvalue())
 
+    def test_windows_path_with_trailing_backslash_unquoted(self) -> None:
+        """Test that Windows paths ending with escaped backslash are handled correctly."""
+        # This reproduces the issue from https://github.com/jelmer/dulwich/issues/1088
+        # A single backslash at the end should actually be a line continuation in strict Git config
+        # But we want to be more tolerant like Git itself
+        cf = self.from_file(
+            b'[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\turl = C:/Users/test\\\\\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n'
+        )
+        self.assertEqual(b"C:/Users/test\\", cf.get((b"remote", b"origin"), b"url"))
+        self.assertEqual(
+            b"+refs/heads/*:refs/remotes/origin/*",
+            cf.get((b"remote", b"origin"), b"fetch"),
+        )
+
+    def test_windows_path_with_trailing_backslash_quoted(self) -> None:
+        """Test that quoted Windows paths with escaped backslashes work correctly."""
+        cf = self.from_file(
+            b'[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\turl = "C:\\\\Users\\\\test\\\\"\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n'
+        )
+        self.assertEqual(b"C:\\Users\\test\\", cf.get((b"remote", b"origin"), b"url"))
+        self.assertEqual(
+            b"+refs/heads/*:refs/remotes/origin/*",
+            cf.get((b"remote", b"origin"), b"fetch"),
+        )
+
+    def test_single_backslash_at_line_end_shows_proper_escaping_needed(self) -> None:
+        """Test that demonstrates proper escaping is needed for single backslashes."""
+        # This test documents the current behavior: a single backslash at the end of a line
+        # is treated as a line continuation per Git config spec. Users should escape backslashes.
+
+        # This reproduces the original issue - single backslash causes line continuation
+        cf = self.from_file(
+            b'[remote "origin"]\n\turl = C:/Users/test\\\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n'
+        )
+        # The result shows that line continuation occurred
+        self.assertEqual(
+            b"C:/Users/testfetch = +refs/heads/*:refs/remotes/origin/*",
+            cf.get((b"remote", b"origin"), b"url"),
+        )
+
+        # The proper way to include a literal backslash is to escape it
+        cf2 = self.from_file(
+            b'[remote "origin"]\n\turl = C:/Users/test\\\\\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n'
+        )
+        self.assertEqual(b"C:/Users/test\\", cf2.get((b"remote", b"origin"), b"url"))
+        self.assertEqual(
+            b"+refs/heads/*:refs/remotes/origin/*",
+            cf2.get((b"remote", b"origin"), b"fetch"),
+        )
+
 
 class ConfigDictTests(TestCase):
     def test_get_set(self) -> None:
@@ -515,6 +565,21 @@ class ApplyInsteadOfTests(TestCase):
             "https://samba.org/", apply_instead_of(config, "https://example.com/")
         )
 
+    def test_apply_preserves_case_in_subsection(self) -> None:
+        """Test that mixed-case URLs (like those with access tokens) are preserved."""
+        config = ConfigDict()
+        # GitHub access tokens have mixed case that must be preserved
+        url_with_token = "https://ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890@github.com/"
+        config.set(("url", url_with_token), "insteadOf", "https://github.com/")
+
+        # Apply the substitution
+        result = apply_instead_of(config, "https://github.com/jelmer/dulwich.git")
+        expected = "https://ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890@github.com/jelmer/dulwich.git"
+        self.assertEqual(expected, result)
+
+        # Verify the token case is preserved
+        self.assertIn("ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890", result)
+
 
 class CaseInsensitiveConfigTests(TestCase):
     def test_case_insensitive(self) -> None:
@@ -562,6 +627,25 @@ class CaseInsensitiveConfigTests(TestCase):
         self.assertEqual(1, len(config))
         config[("CORE",)] = "value2"
         self.assertEqual(1, len(config))  # Same key, case insensitive
+
+    def test_subsection_case_preserved(self) -> None:
+        """Test that subsection names preserve their case."""
+        config = CaseInsensitiveOrderedMultiDict()
+        # Section names should be case-insensitive, but subsection names should preserve case
+        config[("url", "https://Example.COM/Path")] = "value1"
+
+        # Can retrieve with different case section name
+        self.assertEqual("value1", config[("URL", "https://Example.COM/Path")])
+        self.assertEqual("value1", config[("url", "https://Example.COM/Path")])
+
+        # But not with different case subsection name
+        with self.assertRaises(KeyError):
+            config[("url", "https://example.com/path")]
+
+        # Verify the stored key preserves subsection case
+        stored_keys = list(config.keys())
+        self.assertEqual(1, len(stored_keys))
+        self.assertEqual(("url", "https://Example.COM/Path"), stored_keys[0])
         config[("other",)] = "value3"
         self.assertEqual(2, len(config))
 
@@ -630,8 +714,12 @@ class CaseInsensitiveConfigTests(TestCase):
     def test_nested_tuple_keys(self) -> None:
         config = CaseInsensitiveOrderedMultiDict()
         config[("branch", "master")] = "value"
-        self.assertEqual("value", config[("BRANCH", "MASTER")])
-        self.assertEqual("value", config[("Branch", "Master")])
+        # Section names are case-insensitive
+        self.assertEqual("value", config[("BRANCH", "master")])
+        self.assertEqual("value", config[("Branch", "master")])
+        # But subsection names are case-sensitive
+        with self.assertRaises(KeyError):
+            config[("branch", "MASTER")]
 
 
 class ConfigFileSetTests(TestCase):

@@ -364,6 +364,28 @@ class BaseObjectStore:
             if sha.startswith(prefix):
                 yield sha
 
+    def get_commit_graph(self):
+        """Get the commit graph for this object store.
+
+        Returns:
+          CommitGraph object if available, None otherwise
+        """
+        return None
+
+    def write_commit_graph(self, refs=None, reachable=True) -> None:
+        """Write a commit graph file for this object store.
+
+        Args:
+            refs: List of refs to include. If None, includes all refs from object store.
+            reachable: If True, includes all commits reachable from refs.
+                      If False, only includes the direct ref targets.
+
+        Note:
+            Default implementation does nothing. Subclasses should override
+            this method to provide commit graph writing functionality.
+        """
+        raise NotImplementedError(self.write_commit_graph)
+
 
 class PackBasedObjectStore(BaseObjectStore):
     def __init__(self, pack_compression_level=-1) -> None:
@@ -381,7 +403,6 @@ class PackBasedObjectStore(BaseObjectStore):
 
         Args:
           count: Number of items to add
-          pack_data: Iterator over pack data tuples
         """
         if count == 0:
             # Don't bother writing an empty pack file
@@ -609,7 +630,7 @@ class PackBasedObjectStore(BaseObjectStore):
         include_comp=False,
         allow_missing: bool = False,
         convert_ofs_delta: bool = True,
-    ) -> Iterator[ShaFile]:
+    ) -> Iterator[UnpackedObject]:
         todo: set[bytes] = set(shas)
         for p in self._iter_cached_packs():
             for unpacked in p.iter_unpacked_subset(
@@ -744,6 +765,9 @@ class DiskObjectStore(PackBasedObjectStore):
         self._alternates = None
         self.loose_compression_level = loose_compression_level
         self.pack_compression_level = pack_compression_level
+
+        # Commit graph support - lazy loaded
+        self._commit_graph = None
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__}({self.path!r})>"
@@ -1065,6 +1089,88 @@ class DiskObjectStore(PackBasedObjectStore):
                     seen.add(sha)
                     yield sha
 
+    def get_commit_graph(self):
+        """Get the commit graph for this object store.
+
+        Returns:
+          CommitGraph object if available, None otherwise
+        """
+        if self._commit_graph is None:
+            from .commit_graph import read_commit_graph
+
+            # Look for commit graph in our objects directory
+            graph_file = os.path.join(self.path, "info", "commit-graph")
+            if os.path.exists(graph_file):
+                self._commit_graph = read_commit_graph(graph_file)
+        return self._commit_graph
+
+    def write_commit_graph(self, refs=None, reachable=True) -> None:
+        """Write a commit graph file for this object store.
+
+        Args:
+            refs: List of refs to include. If None, includes all refs from object store.
+            reachable: If True, includes all commits reachable from refs.
+                      If False, only includes the direct ref targets.
+        """
+        from .commit_graph import get_reachable_commits
+
+        if refs is None:
+            # Get all commit objects from the object store
+            all_refs = []
+            # Iterate through all objects to find commits
+            for sha in self:
+                try:
+                    obj = self[sha]
+                    if obj.type_name == b"commit":
+                        all_refs.append(sha)
+                except KeyError:
+                    continue
+        else:
+            # Use provided refs
+            all_refs = refs
+
+        if not all_refs:
+            return  # No commits to include
+
+        if reachable:
+            # Get all reachable commits
+            commit_ids = get_reachable_commits(self, all_refs)
+        else:
+            # Just use the direct ref targets - ensure they're hex ObjectIDs
+            commit_ids = []
+            for ref in all_refs:
+                if isinstance(ref, bytes) and len(ref) == 40:
+                    # Already hex ObjectID
+                    commit_ids.append(ref)
+                elif isinstance(ref, bytes) and len(ref) == 20:
+                    # Binary SHA, convert to hex ObjectID
+                    from .objects import sha_to_hex
+
+                    commit_ids.append(sha_to_hex(ref))
+                else:
+                    # Assume it's already correct format
+                    commit_ids.append(ref)
+
+        if commit_ids:
+            # Write commit graph directly to our object store path
+            # Generate the commit graph
+            from .commit_graph import generate_commit_graph
+
+            graph = generate_commit_graph(self, commit_ids)
+
+            if graph.entries:
+                # Ensure the info directory exists
+                info_dir = os.path.join(self.path, "info")
+                os.makedirs(info_dir, exist_ok=True)
+
+                # Write using GitFile for atomic operation
+                graph_path = os.path.join(info_dir, "commit-graph")
+                with GitFile(graph_path, "wb") as f:
+                    graph.write_to_file(f)
+
+            # Clear cached commit graph so it gets reloaded
+            self._commit_graph = None
+
 
 class MemoryObjectStore(BaseObjectStore):
     """Object store that keeps all objects in memory."""
@@ -1150,6 +1256,7 @@ class MemoryObjectStore(BaseObjectStore):
                 for obj in PackInflater.for_pack_data(p, self.get_raw):
                     self.add_object(obj)
                 p.close()
+                f.close()
             else:
                 f.close()
 
@@ -1165,7 +1272,6 @@ class MemoryObjectStore(BaseObjectStore):
 
         Args:
           count: Number of items to add
-          pack_data: Iterator over pack data tuples
         """
         for unpacked_object in unpacked_objects:
             self.add_object(unpacked_object.sha_file())
@@ -1290,7 +1396,6 @@ class MissingObjectFinder:
       get_tagged: Function that returns a dict of pointed-to sha -> tag
         sha for including tags.
       get_parents: Optional function for getting the parents of a commit.
-      tagged: dict of pointed-to sha -> tag sha for including tags
     """
 
     def __init__(
@@ -1719,12 +1824,16 @@ class BucketBasedObjectStore(PackBasedObjectStore):
                 if pack.get_stored_checksum() == p.get_stored_checksum():
                     p.close()
                     idx.close()
+                    pf.close()
+                    idxf.close()
                     return pack
             pf.seek(0)
             idxf.seek(0)
             self._upload_pack(basename, pf, idxf)
             final_pack = Pack.from_objects(p, idx)
             self._add_cached_pack(basename, final_pack)
+            pf.close()
+            idxf.close()
             return final_pack
 
         return pf, commit, pf.close

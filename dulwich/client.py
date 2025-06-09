@@ -129,7 +129,7 @@ from .refs import (
     read_info_refs,
     split_peeled_refs,
 )
-from .repo import Repo
+from .repo import BaseRepo, Repo
 
 # Default ref prefix, used if none is specified.
 # GitHub defaults to just sending HEAD if no ref-prefix is
@@ -922,7 +922,7 @@ class GitClient:
     def fetch(
         self,
         path: str,
-        target: Repo,
+        target: BaseRepo,
         determine_wants: Optional[
             Callable[[dict[bytes, bytes], Optional[int]], list[bytes]]
         ] = None,
@@ -1661,12 +1661,19 @@ class SubprocessWrapper:
         else:
             return _fileno_can_read(self.proc.stdout.fileno())
 
-    def close(self) -> None:
+    def close(self, timeout: Optional[int] = 60) -> None:
         self.proc.stdin.close()
         self.proc.stdout.close()
         if self.proc.stderr:
             self.proc.stderr.close()
-        self.proc.wait()
+        try:
+            self.proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            self.proc.kill()
+            self.proc.wait()
+            raise GitProtocolError(
+                f"Git subprocess did not terminate within {timeout} seconds; killed it."
+            ) from e
 
 
 def find_git_command() -> list[str]:
@@ -1824,7 +1831,7 @@ class LocalGitClient(GitClient):
     def fetch(
         self,
         path: str,
-        target: Repo,
+        target: BaseRepo,
         determine_wants: Optional[
             Callable[[dict[bytes, bytes], Optional[int]], list[bytes]]
         ] = None,
@@ -2104,7 +2111,7 @@ def ParamikoSSHVendor(**kwargs):
 
 
 # Can be overridden by users
-get_ssh_vendor = SubprocessSSHVendor
+get_ssh_vendor: Callable[[], SSHVendor] = SubprocessSSHVendor
 
 
 class SSHGitClient(TraditionalGitClient):
@@ -2911,6 +2918,8 @@ def get_transport_and_path_from_url(
       url: URL to open (a unicode string)
       config: Optional config object
       operation: Kind of operation that'll be performed; "pull" or "push"
+
+    Keyword Args:
       thin_packs: Whether or not thin packs should be retrieved
       report_activity: Optional callback for reporting transport
         activity.
@@ -2980,6 +2989,8 @@ def get_transport_and_path(
       location: URL or path (a string)
       config: Optional config object
       operation: Kind of operation that'll be performed; "pull" or "push"
+
+    Keyword Args:
       thin_packs: Whether or not thin packs should be retrieved
       report_activity: Optional callback for reporting transport
         activity.
